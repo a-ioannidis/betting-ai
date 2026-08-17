@@ -6,6 +6,7 @@ from urllib.parse import quote
 from google import genai
 from google.genai import types
 
+# 1. Αρχικοποίηση του Google GenAI Client
 client = genai.Client()
 
 def get_news(team_name):
@@ -16,7 +17,7 @@ def get_news(team_name):
     return [entry.title for entry in feed.entries[:3]]
 
 def analyze_with_gemini(match_data):
-    """Στέλνει τα δεδομένα απευθείας στο Gemini 2.5 Flash."""
+    """Στέλνει τα δεδομένα απευθείας στο Gemini Flash."""
     prompt = f"""
     Είσαι ένας επαγγελματίας αθλητικός αναλυτής. 
     Ανάλυσε τα παρακάτω δεδομένα για τον αγώνα:
@@ -26,10 +27,10 @@ def analyze_with_gemini(match_data):
     Υπολόγισε τις πιθανότητες νίκης/ισοπαλίας (1, X, 2) σε ποσοστά (%) και δώσε μια σύντομη αιτιολόγηση.
     """
 
-    print("🧠 Αποστολή απευθείας στο Gemini 2.5 Flash...")
+    print("🧠 Αποστολή απευθείας στο Gemini API...")
     
     response = client.models.generate_content(
-        model='gemini-2.5-flash',
+        model='gemini-2.0-flash', # Χρήση του ενεργού μοντέλου
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0.2,
