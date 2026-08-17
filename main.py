@@ -11,10 +11,33 @@ from google.genai import types
 # 1. Αρχικοποίηση Clients & Keys
 client = genai.Client()
 FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+
 HEADERS = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
 
+def send_telegram_message(message):
+    """Στέλνει μήνυμα στο Telegram Bot."""
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("⚠️ Telegram credentials λείπουν, παράκαμψη αποστολής.")
+        return
+        
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": message
+    }
+    try:
+        response = requests.post(url, json=payload)
+        if response.status_code == 200:
+            print("📱 Το μήνυμα στάλθηκε επιτυχώς στο Telegram!")
+        else:
+            print(f"⚠️ Σφάλμα Telegram API: {response.text}")
+    except Exception as e:
+        print(f"❌ Αποτυχία αποστολής στο Telegram: {e}")
+
 def fetch_matches_for_dates(date_from, date_to):
-    """Εκτελεί το αίτημα στο API του football-data.org για συγκεκριμένο εύρος ημερομηνιών."""
+    """Εκτελεί το αίτημα στο API του football-data.org."""
     url = f"https://api.football-data.org/v4/matches?dateFrom={date_from}&dateTo={date_to}"
     try:
         response = requests.get(url, headers=HEADERS)
@@ -28,28 +51,19 @@ def fetch_matches_for_dates(date_from, date_to):
         return []
 
 def get_matches_smart():
-    """
-    Ψάχνει αγώνες για σήμερα. Αν δεν βρει, υπολογίζει τις ημερομηνίες 
-    του ερχόμενου Σαββατοκύριακου και επιστρέφει το πρόγραμμά τους.
-    """
+    """Ψάχνει αγώνες για σήμερα ή για το ερχόμενο Σαββατοκύριακο."""
     now = datetime.now()
     today_str = now.strftime('%Y-%m-%d')
     
-    # 1. Πρώτη δοκιμή: Σημερινοί αγώνες
     print(f"🔍 Έλεγχος για σημερινούς αγώνες ({today_str})...")
     matches = fetch_matches_for_dates(today_str, today_str)
     
     if matches:
-        print(f"✅ Βρέθηκαν {len(matches)} αγώνες για σήμερα!")
         return matches, "Σημερινοί Αγώνες"
 
-    # 2. Αν δεν υπάρχουν σημερινοί αγώνες, υπολογίζουμε το ερχόμενο Σαββατοκύριακο
-    print("ℹ️ Δεν βρέθηκαν αγώνες σήμερα. Αναζήτηση για το ερχόμενο Σαββατοκύριακο...")
-    
-    # Υπολογισμός ημερών μέχρι το Σάββατο (weekday 5)
     days_until_saturday = (5 - now.weekday()) % 7
     if days_until_saturday == 0 and now.weekday() != 5:
-        days_until_saturday = 7  # Αν είναι Κυριακή, πάμε στο επόμενο Σάββατο
+        days_until_saturday = 7
         
     saturday = now + timedelta(days=days_until_saturday)
     sunday = saturday + timedelta(days=1)
@@ -63,7 +77,7 @@ def get_matches_smart():
     return weekend_matches, f"Αγώνες Σαββατοκύριακου ({sat_str} - {sun_str})"
 
 def get_news(team_name):
-    """Τραβάει ειδήσεις μέσω Google News RSS με ασφαλές URL encoding."""
+    """Τραβάει ειδήσεις μέσω Google News RSS."""
     encoded_query = quote(f"{team_name} football")
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
@@ -97,11 +111,11 @@ def main():
     print(f"⚽ Κατηγορία: {match_type} | Σύνολο: {len(matches)} αγώνες.")
 
     if not matches:
-        print("ℹ️ Δεν βρέθηκαν διαθέσιμοι αγώνες ούτε για το Σαββατοκύριακο.")
+        print("ℹ️ Δεν βρέθηκαν διαθέσιμοι αγώνες.")
         return
 
-    # Αναλύουμε έως 5 αγώνες για να τηρήσουμε τα δωρεάν όρια
-    for match in matches[:5]:
+    # Αναλύουμε τους πρώτους 3 αγώνες
+    for match in matches[:3]:
         home_team = match['homeTeam']['name']
         away_team = match['awayTeam']['name']
         league = match['competition']['name']
@@ -119,10 +133,12 @@ def main():
         
         analysis = analyze_with_gemini(match_payload)
         
-        print(f"\n--- ΑΝΑΛΥΣΗ: {home_team} vs {away_team} ---")
-        print(analysis)
+        # Σύνθεση μηνύματος για το Telegram
+        telegram_msg = f"⚽ {home_team} vs {away_team} ({league})\n📅 {match_date}\n\n{analysis}"
         
-        # Καθυστέρηση 6 δευτερολέπτων για σεβασμό των 10 calls/min
+        # Αποστολή στο Telegram
+        send_telegram_message(telegram_msg)
+        
         time.sleep(6)
 
 if __name__ == "__main__":
