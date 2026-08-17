@@ -30,7 +30,7 @@ def analyze_with_gemini(match_data):
     print("🧠 Αποστολή απευθείας στο Gemini API...")
     
     response = client.models.generate_content(
-        model='gemini-2.0-flash', # Χρήση του ενεργού μοντέλου
+        model='gemini-3.6-flash',
         contents=prompt,
         config=types.GenerateContentConfig(
             temperature=0.2,
