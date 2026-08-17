@@ -3,7 +3,7 @@ import requests
 import feedparser
 import json
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from urllib.parse import quote
 from google import genai
 from google.genai import types
@@ -11,26 +11,56 @@ from google.genai import types
 # 1. Αρχικοποίηση Clients & Keys
 client = genai.Client()
 FOOTBALL_DATA_API_KEY = os.getenv("FOOTBALL_DATA_API_KEY")
-
 HEADERS = {"X-Auth-Token": FOOTBALL_DATA_API_KEY}
 
-def get_todays_matches():
-    """Τραβάει τους σημερινούς αγώνες από το football-data.org."""
-    today = datetime.now().strftime('%Y-%m-%d')
-    url = f"https://api.football-data.org/v4/matches?dateFrom={today}&dateTo={today}"
-    
+def fetch_matches_for_dates(date_from, date_to):
+    """Εκτελεί το αίτημα στο API του football-data.org για συγκεκριμένο εύρος ημερομηνιών."""
+    url = f"https://api.football-data.org/v4/matches?dateFrom={date_from}&dateTo={date_to}"
     try:
         response = requests.get(url, headers=HEADERS)
         if response.status_code == 200:
-            data = response.json()
-            matches = data.get('matches', [])
-            return matches
+            return response.json().get('matches', [])
         else:
             print(f"⚠️ Σφάλμα API {response.status_code}: {response.text}")
             return []
     except Exception as e:
-        print(f"❌ Αποτυχία σύνδεσης με football-data.org: {e}")
+        print(f"❌ Αποτυχία σύνδεσης: {e}")
         return []
+
+def get_matches_smart():
+    """
+    Ψάχνει αγώνες για σήμερα. Αν δεν βρει, υπολογίζει τις ημερομηνίες 
+    του ερχόμενου Σαββατοκύριακου και επιστρέφει το πρόγραμμά τους.
+    """
+    now = datetime.now()
+    today_str = now.strftime('%Y-%m-%d')
+    
+    # 1. Πρώτη δοκιμή: Σημερινοί αγώνες
+    print(f"🔍 Έλεγχος για σημερινούς αγώνες ({today_str})...")
+    matches = fetch_matches_for_dates(today_str, today_str)
+    
+    if matches:
+        print(f"✅ Βρέθηκαν {len(matches)} αγώνες για σήμερα!")
+        return matches, "Σημερινοί Αγώνες"
+
+    # 2. Αν δεν υπάρχουν σημερινοί αγώνες, υπολογίζουμε το ερχόμενο Σαββατοκύριακο
+    print("ℹ️ Δεν βρέθηκαν αγώνες σήμερα. Αναζήτηση για το ερχόμενο Σαββατοκύριακο...")
+    
+    # Υπολογισμός ημερών μέχρι το Σάββατο (weekday 5)
+    days_until_saturday = (5 - now.weekday()) % 7
+    if days_until_saturday == 0 and now.weekday() != 5:
+        days_until_saturday = 7  # Αν είναι Κυριακή, πάμε στο επόμενο Σάββατο
+        
+    saturday = now + timedelta(days=days_until_saturday)
+    sunday = saturday + timedelta(days=1)
+    
+    sat_str = saturday.strftime('%Y-%m-%d')
+    sun_str = sunday.strftime('%Y-%m-%d')
+    
+    print(f"📅 Αναζήτηση αγώνων Σαββατοκύριακου ({sat_str} έως {sun_str})...")
+    weekend_matches = fetch_matches_for_dates(sat_str, sun_str)
+    
+    return weekend_matches, f"Αγώνες Σαββατοκύριακου ({sat_str} - {sun_str})"
 
 def get_news(team_name):
     """Τραβάει ειδήσεις μέσω Google News RSS με ασφαλές URL encoding."""
@@ -61,13 +91,13 @@ def analyze_with_gemini(match_data):
     return response.text
 
 def main():
-    print("🚀 Εκκίνηση Pipeline - Λήψη Σημερινών Αγώνων...")
+    print("🚀 Εκκίνηση Smart Betting Pipeline...")
     
-    matches = get_todays_matches()
-    print(f"⚽ Βρέθηκαν {len(matches)} αγώνες για σήμερα.")
+    matches, match_type = get_matches_smart()
+    print(f"⚽ Κατηγορία: {match_type} | Σύνολο: {len(matches)} αγώνες.")
 
     if not matches:
-        print("ℹ️ Δεν υπάρχουν διαθέσιμοι αγώνες σήμερα ή δεν βρέθηκαν δεδομένα.")
+        print("ℹ️ Δεν βρέθηκαν διαθέσιμοι αγώνες ούτε για το Σαββατοκύριακο.")
         return
 
     # Αναλύουμε έως 5 αγώνες για να τηρήσουμε τα δωρεάν όρια
@@ -75,13 +105,14 @@ def main():
         home_team = match['homeTeam']['name']
         away_team = match['awayTeam']['name']
         league = match['competition']['name']
+        match_date = match['utcDate'][:10]
         
-        print(f"\n🔄 Επεξεργασία: {home_team} vs {away_team} ({league})")
+        print(f"\n🔄 Επεξεργασία: {home_team} vs {away_team} ({league} - {match_date})")
         
         match_payload = {
             "match": f"{home_team} vs {away_team}",
             "league": league,
-            "status": match['status'],
+            "date": match_date,
             "home_news": get_news(home_team),
             "away_news": get_news(away_team)
         }
