@@ -83,6 +83,35 @@ def get_news(team_name):
     feed = feedparser.parse(rss_url)
     return [entry.title for entry in feed.entries[:2]]
 
+def call_gemini_with_retry(prompt, is_json=False, retries=4):
+    """
+    Καλεί αποκλειστικά το gemini-3.6-flash. 
+    Σε περίπτωση 503/UNAVAILABLE περιμένει και ξαναπροσπαθεί στο ίδιο μοντέλο.
+    """
+    model_name = 'gemini-3.6-flash'
+    
+    for attempt in range(retries):
+        try:
+            config_args = {"temperature": 0.1}
+            if is_json:
+                config_args["response_mime_type"] = "application/json"
+                
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(**config_args)
+            )
+            return response.text
+        except Exception as e:
+            if "503" in str(e) or "UNAVAILABLE" in str(e):
+                wait_time = (attempt + 1) * 6
+                print(f"⚠️ Υψηλός φόρτος στο {model_name}. Επαναδοκιμή σε {wait_time}s (Προσπάθεια {attempt + 1}/{retries})...")
+                time.sleep(wait_time)
+            else:
+                print(f"❌ Σφάλμα API στο μοντέλο {model_name}: {e}")
+                break
+    return None
+
 def analyze_batch(batch_data):
     """Αναλύει ένα γκρουπ αγώνων (batch) και επιστρέφει τους επικρατέστερους με διευρυμένες στοιχηματικές αγορές."""
     prompt = f"""
@@ -110,18 +139,13 @@ def analyze_batch(batch_data):
     ]
     """
 
-    response = client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            response_mime_type="application/json"
-        )
-    )
-    try:
-        return json.loads(response.text)
-    except:
-        return []
+    res_text = call_gemini_with_retry(prompt, is_json=True)
+    if res_text:
+        try:
+            return json.loads(res_text)
+        except Exception:
+            return []
+    return []
 
 def select_top_picks(candidates, total_matches):
     """Επιλέγει τις 3 κορυφαίες προτάσεις από όλους τους επικρατέστερους αγώνες."""
@@ -143,15 +167,11 @@ def select_top_picks(candidates, total_matches):
     3. ...
     """
 
-    response = client.models.generate_content(
-        model='gemini-3.6-flash',
-        contents=prompt,
-        config=types.GenerateContentConfig(temperature=0.1)
-    )
-    return response.text
+    res_text = call_gemini_with_retry(prompt, is_json=False)
+    return res_text if res_text else "⚠️ Αδυναμία παραγωγής τελικών προτάσεων λόγω σφάλματος API."
 
 def main():
-    print("🚀 Εκκίνηση Smart Betting Pipeline (Full Coverage & Combo Bets)...")
+    print("🚀 Εκκίνηση Smart Betting Pipeline (Strict gemini-3.6-flash Retry)...")
     
     matches, match_type = get_matches_smart()
     total_matches = len(matches)
@@ -188,7 +208,7 @@ def main():
         print(f"🧠 Αποστολή Batch {i//BATCH_SIZE + 1} στο Gemini...")
         batch_candidates = analyze_batch(batch_payload)
         candidates.extend(batch_candidates)
-        time.sleep(2)
+        time.sleep(3)
 
     print(f"\n📊 Συλλέχθηκαν {len(candidates)} υποψήφιοι αγώνες από όλα τα batches.")
     print("🏆 Τελική αξιολόγηση για τις 3 κορυφαίες προτάσεις...")
