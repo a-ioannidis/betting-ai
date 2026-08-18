@@ -95,7 +95,7 @@ def call_gemini_with_retry(prompt, retries=3):
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
-                config=types.GenerateContentConfig(temperature=0.1)
+                config=types.GenerateContentConfig(temperature=0.2)
             )
             return response.text
         except Exception as e:
@@ -114,29 +114,33 @@ def call_gemini_with_retry(prompt, retries=3):
                 break
     return None
 
-def analyze_all_matches_in_single_call(all_matches_data, total_matches):
+def analyze_all_matches_in_single_call(all_matches_data):
     """
-    Στέλνει ΟΛΟΥΣ τους αγώνες σε 1 μόνο API call στο Gemini για μέγιστη εξοικονόμηση ορίων RPD.
+    Στέλνει ΟΛΟΥΣ τους αγώνες στο Gemini και ζητάει εκτέλεση Monte Carlo simulations.
     """
+    total = len(all_matches_data)
     prompt = f"""
-    Είσαι ένας αυστηρός αναλυτής αθλητικών στοιχημάτων. 
-    Εξετάζεις ένα σύνολο {total_matches} αγώνων.
+    Είσαι ένας κορυφαίος αθλητικός αναλυτής και ποσοτικός μοντελιστής (Quantitative Analyst). 
+    Σου παρέχονται δεδομένα για {total} αγώνες.
 
     ΔΕΔΟΜΕΝΑ ΑΓΩΝΩΝ:
     {json.dumps(all_matches_data, ensure_ascii=False, indent=2)}
 
-    ΟΔΗΓΙΕΣ ΑΝΑΛΥΣΗΣ:
-    1. Αξιολόγησε όλους τους αγώνες συνδυάζοντας την έδρα, τις ειδήσεις/κλίμα των ομάδων και τη δυναμική.
-    2. Επιλογή: Ξεχώρισε ΑΥΣΤΗΡΑ τους 3 αγώνες που έχουν τις ΥΨΗΛΟΤΕΡΕΣ ΠΙΘΑΝΟΤΗΤΕΣ επιβεβαίωσης (High Confidence Bets).
-    3. Μπορείς να προτείνεις οποιαδήποτε αγορά: 1X2, Διπλή Ευκαιρία, Over/Under 1.5/2.5, Goal/Goal ή Combo Bets (π.χ. 1 & Over 1.5).
+    ΟΔΗΓΙΕΣ ΠΡΟΣΟΜΟΙΩΣΗΣ & ΑΝΑΛΥΣΗΣ:
+    1. Για ΚΑΘΕ αγώνα, εκτέλεσε νοητά 500 κύκλους προσομοίωσης (Monte Carlo Simulations), συνυπολογίζοντας:
+       - Δυναμική έδρας και παράγοντα γηπέδου.
+       - Αγωνιστικό κλίμα, ειδησεογραφία και ψυχολογία από τα news feeds.
+       - Στατιστική πιθανότητα επιβεβαίωσης αγορών (1X2, Over/Under, Goal/Goal, Combos).
+    2. Απομόνωσε ΜΟΝΟ τα αποτελέσματα που εμφανίζουν συντριπτική σταθερότητα και επιμένουν στα περισσότερα σενάρια (High Consistency & Confidence Rate > 75%).
+    3. Επιλογή: Διάλεξε ΑΥΣΤΗΡΑ τους 3 αγώνες με το υψηλότερο ποσοστό σταθερότητας/επιβεβαίωσης από ολόκληρο το πακέτο των {total} αγώνων.
 
     ΜΟΡΦΗ ΑΠΑΝΤΗΣΗΣ (Strict Text Format for Telegram):
-    🎯 TOP PROPICKS ({total_matches} Αγώνες Εξετάστηκαν)
+    🎯 TOP HIGH-CONSISTENCY PICKS ({total} Αγώνες Εξετάστηκαν - 500x Simulations)
     -----------------------------------
     1. [Ομάδα Α] vs [Ομάδα Β] ([Διοργάνωση])
        💡 Πρόταση: [Σημείο / Combo / Over/Under / G/G]
-       📊 Πιθανότητα: [X%]
-       📝 Αιτιολογία: [Σύντομη πρόταση]
+       📊 Πιθανότητα Επιβεβαίωσης: [X%]
+       📝 Αιτιολογία Προσομοίωσης: [Σύντομη αιτιολόγηση]
 
     2. ...
     3. ...
@@ -146,7 +150,7 @@ def analyze_all_matches_in_single_call(all_matches_data, total_matches):
     return res_text if res_text else "⚠️ Αδυναμία παραγωγής τελικών προτάσεων λόγω εξάντλησης ημερήσιου ορίου API."
 
 def main():
-    print("🚀 Εκκίνηση Smart Betting Pipeline (1-Call Ultra-Optimized)...")
+    print("🚀 Εκκίνηση Smart Betting Pipeline (Monte Carlo Simulation Powered)...")
     
     matches, match_type = get_matches_smart()
     total_matches = len(matches)
@@ -156,9 +160,9 @@ def main():
         print("ℹ️ Δεν βρέθηκαν διαθέσιμοι αγώνες.")
         return
 
-    # Συλλογή δεδομένων για όλους τους διαθέσιμους αγώνες (έως 30)
+    # Συλλογή δεδομένων για ΟΛΟΥΣ τους διαθέσιμους αγώνες
     all_payloads = []
-    for match in matches[:30]:
+    for match in matches:
         home_team = match['homeTeam']['name']
         away_team = match['awayTeam']['name']
         league = match['competition']['name']
@@ -171,10 +175,10 @@ def main():
             "home_news": get_news(home_team),
             "away_news": get_news(away_team)
         })
-        time.sleep(0.3)
+        time.sleep(0.2)
 
-    print(f"\n🧠 Αποστολή και των {len(all_payloads)} αγώνων σε 1 μόνο API call στο Gemini...")
-    final_picks = analyze_all_matches_in_single_call(all_payloads, total_matches)
+    print(f"\n🧠 Αποστολή και των {len(all_payloads)} αγώνων για Monte Carlo Simulations στο Gemini...")
+    final_picks = analyze_all_matches_in_single_call(all_payloads)
     
     print("\n--- ΤΕΛΙΚΕΣ ΠΡΟΤΑΣΕΙΣ GEMINI ---")
     print(final_picks)
