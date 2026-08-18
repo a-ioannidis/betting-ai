@@ -30,7 +30,7 @@ def send_telegram_message(message):
     try:
         response = requests.post(url, json=payload)
         if response.status_code == 200:
-            print("📱 Το συγκεντρωτικό μήνυμα στάλθηκε επιτυχώς στο Telegram!")
+            print("📱 Το τελικό συγκεντρωτικό μήνυμα στάλθηκε επιτυχώς στο Telegram!")
         else:
             print(f"⚠️ Σφάλμα Telegram API: {response.text}")
     except Exception as e:
@@ -81,34 +81,61 @@ def get_news(team_name):
     encoded_query = quote(f"{team_name} football")
     rss_url = f"https://news.google.com/rss/search?q={encoded_query}&hl=en-US&gl=US&ceid=US:en"
     feed = feedparser.parse(rss_url)
-    return [entry.title for entry in feed.entries[:3]]
+    return [entry.title for entry in feed.entries[:2]]
 
-def analyze_batch_with_gemini(all_matches_data):
-    """
-    Στέλνει όλους τους αγώνες μαζί στο Gemini για να επιλέξει 
-    τις 2-3 καλύτερες ευκαιρίες με υψηλή πιθανότητα.
-    """
+def analyze_batch(batch_data):
+    """Αναλύει ένα γκρουπ αγώνων (batch) και επιστρέφει τους επικρατέστερους με διευρυμένες στοιχηματικές αγορές."""
     prompt = f"""
-    Είσαι ένας αυστηρός, επαγγελματίας αναλυτής αθλητικών στοιχημάτων.
-    Εξετάζεις ένα σύνολο {len(all_matches_data)} αγώνων.
+    Είσαι επαγγελματίας αθλητικός αναλυτής. Εξέτασε το παρακάτω γκρουπ αγώνων.
+    
+    ΔΕΔΟΜΕΝΑ:
+    {json.dumps(batch_data, ensure_ascii=False, indent=2)}
 
-    ΔΕΔΟΜΕΝΑ ΑΓΩΝΩΝ:
-    {json.dumps(all_matches_data, ensure_ascii=False, indent=2)}
+    Ξεχώρισε τους 2 αγώνες με τις υψηλότερες πιθανότητες επιβεβαίωσης.
+    
+    ΜΠΟΡΕΙΣ ΝΑ ΠΡΟΤΕΙΝΕΙΣ ΟΠΟΙΑΔΗΠΟΤΕ ΑΠΟ ΤΙΣ ΕΞΗΣ ΑΓΟΡΕΣ (Choose the best value option):
+    - Τελικό Αποτέλεσμα / Διπλή Ευκαιρία (1, X, 2, 1X, 2X)
+    - Γκολ (Over 1.5, Over 2.5, Goal/Goal, No Goal)
+    - Combo Bets (π.χ. 1 & Over 1.5, 2 & Over 2.5, 1X & Over 1.5, G/G & Over 2.5)
 
-    ΟΔΗΓΙΕΣ ΑΝΑΛΥΣΗΣ:
-    1. Αξιολόγησε κάθε αγώνα συνδυάζοντας την έδρα, τις ειδήσεις/κλίμα των ομάδων και τη δυναμική της κατηγορίας.
-    2. Επιλογή: Ξεχώρισε ΑΥΣΤΗΡΑ τους 2 έως 3 αγώνες που έχουν τις ΥΨΗΛΟΤΕΡΕΣ ΠΙΘΑΝΟΤΗΤΕΣ επιβεβαίωσης (High Confidence Bets).
-    3. Για κάθε μία από τις 2-3 προτάσεις, δώσε:
-       - Αγώνας & Διοργάνωση
-       - Πρόταση Πονταρίσματος (π.χ. 1, X, 2, 1X, 2X ή Over/Under αν προκύπτει ξεκάθαρα)
-       - Εκτιμώμενη Πιθανότητα Επιβεβαίωσης (%)
-       - Μία πρόταση αυστηρής αιτιολογίας (Core Reason)
+    Επίστρεψε JSON μορφή ως ακολούθως:
+    [
+      {{
+        "match": "Ομάδα A vs Ομάδα B",
+        "league": "Διοργάνωση",
+        "pick": "Πρόταση (π.χ. 1 & Over 1.5, Over 2.5, G/G)",
+        "confidence": 78,
+        "reason": "Σύντομη αιτιολογία"
+      }}
+    ]
+    """
+
+    response = client.models.generate_content(
+        model='gemini-3.6-flash',
+        contents=prompt,
+        config=types.GenerateContentConfig(
+            temperature=0.1,
+            response_mime_type="application/json"
+        )
+    )
+    try:
+        return json.loads(response.text)
+    except:
+        return []
+
+def select_top_picks(candidates, total_matches):
+    """Επιλέγει τις 3 κορυφαίες προτάσεις από όλους τους επικρατέστερους αγώνες."""
+    prompt = f"""
+    Είσαι ένας αυστηρός αναλυτής στοιχημάτων. Εξετάστηκαν συνολικά {total_matches} αγώνες.
+    Από τους παρακάτω επικρατέστερους αγώνες, διάλεξε ΑΥΣΤΗΡΑ τις 3 ΚΑΛΥΤΕΡΕΣ προτάσεις (με την υψηλότερη αξιοπιστία):
+
+    {json.dumps(candidates, ensure_ascii=False, indent=2)}
 
     ΜΟΡΦΗ ΑΠΑΝΤΗΣΗΣ (Strict Text Format for Telegram):
-    🎯 TOP PROPICKS ({len(all_matches_data)} Αγώνες Εξετάστηκαν)
+    🎯 TOP PROPICKS ({total_matches} Αγώνες Εξετάστηκαν)
     -----------------------------------
     1. [Ομάδα Α] vs [Ομάδα Β] ([Διοργάνωση])
-       💡 Πρόταση: [Σημεῖο]
+       💡 Πρόταση: [Σημείο / Combo / Over/Under / G/G]
        📊 Πιθανότητα: [X%]
        📝 Αιτιολογία: [Σύντομη πρόταση]
 
@@ -119,15 +146,12 @@ def analyze_batch_with_gemini(all_matches_data):
     response = client.models.generate_content(
         model='gemini-3.6-flash',
         contents=prompt,
-        config=types.GenerateContentConfig(
-            temperature=0.1,
-            system_instruction="Είσαι αναλυτής στοιχηματικών ευκαιριών. Δίνεις μόνο τις πιο ισχυρές προτάσεις με σαφήνεια."
-        )
+        config=types.GenerateContentConfig(temperature=0.1)
     )
     return response.text
 
 def main():
-    print("🚀 Εκκίνηση Smart Betting Pipeline (Value Bet Finder)...")
+    print("🚀 Εκκίνηση Smart Betting Pipeline (Full Coverage & Combo Bets)...")
     
     matches, match_type = get_matches_smart()
     total_matches = len(matches)
@@ -137,32 +161,44 @@ def main():
         print("ℹ️ Δεν βρέθηκαν διαθέσιμοι αγώνες.")
         return
 
-    # Συλλέγουμε δεδομένα για τους πρώτους 8 αγώνες
-    batch_payload = []
-    for match in matches[:8]:
-        home_team = match['homeTeam']['name']
-        away_team = match['awayTeam']['name']
-        league = match['competition']['name']
-        match_date = match['utcDate'][:10]
-        
-        print(f"🔄 Συλλογή δεδομένων: {home_team} vs {away_team}")
-        
-        batch_payload.append({
-            "match": f"{home_team} vs {away_team}",
-            "league": league,
-            "date": match_date,
-            "home_news": get_news(home_team),
-            "away_news": get_news(away_team)
-        })
-        time.sleep(2) # Μικρή καθυστέρηση για τα RSS feeds
+    BATCH_SIZE = 10
+    candidates = []
 
-    print("\n🧠 Αποστολή στο Gemini για αξιολόγηση και επιλογή TOP προτάσεων...")
-    final_picks = analyze_batch_with_gemini(batch_payload)
+    # Επεξεργασία όλων των αγώνων σε batches των 10
+    for i in range(0, total_matches, BATCH_SIZE):
+        batch_matches = matches[i:i + BATCH_SIZE]
+        print(f"\n🔄 Επεξεργασία Batch {i//BATCH_SIZE + 1} ({len(batch_matches)} αγώνες)...")
+        
+        batch_payload = []
+        for match in batch_matches:
+            home_team = match['homeTeam']['name']
+            away_team = match['awayTeam']['name']
+            league = match['competition']['name']
+            match_date = match['utcDate'][:10]
+            
+            batch_payload.append({
+                "match": f"{home_team} vs {away_team}",
+                "league": league,
+                "date": match_date,
+                "home_news": get_news(home_team),
+                "away_news": get_news(away_team)
+            })
+            time.sleep(1)
+
+        print(f"🧠 Αποστολή Batch {i//BATCH_SIZE + 1} στο Gemini...")
+        batch_candidates = analyze_batch(batch_payload)
+        candidates.extend(batch_candidates)
+        time.sleep(2)
+
+    print(f"\n📊 Συλλέχθηκαν {len(candidates)} υποψήφιοι αγώνες από όλα τα batches.")
+    print("🏆 Τελική αξιολόγηση για τις 3 κορυφαίες προτάσεις...")
+    
+    final_picks = select_top_picks(candidates, total_matches)
     
     print("\n--- ΤΕΛΙΚΕΣ ΠΡΟΤΑΣΕΙΣ GEMINI ---")
     print(final_picks)
     
-    # Αποστολή του συγκεντρωτικού μηνύματος στο Telegram
+    # Αποστολή στο Telegram
     send_telegram_message(final_picks)
 
 if __name__ == "__main__":
