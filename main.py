@@ -3,6 +3,7 @@ import requests
 import feedparser
 import json
 import time
+import re
 from datetime import datetime, timedelta
 from urllib.parse import quote
 from google import genai
@@ -30,7 +31,7 @@ def send_telegram_message(message):
     try:
         response = requests.post(url, json=payload)
         if response.status_code == 200:
-            print("📱 Το τελικό συγκεντρωτικό μήνυμα στάλθηκε επιτυχώς στο Telegram!")
+            print("📱 Το συγκεντρωτικό μήνυμα στάλθηκε επιτυχώς στο Telegram!")
         else:
             print(f"⚠️ Σφάλμα Telegram API: {response.text}")
     except Exception as e:
@@ -83,77 +84,51 @@ def get_news(team_name):
     feed = feedparser.parse(rss_url)
     return [entry.title for entry in feed.entries[:2]]
 
-def call_gemini_with_retry(prompt, is_json=False, retries=4):
+def call_gemini_with_retry(prompt, retries=3):
     """
-    Καλεί αποκλειστικά το gemini-3.6-flash. 
-    Σε περίπτωση 503/UNAVAILABLE περιμένει και ξαναπροσπαθεί στο ίδιο μοντέλο.
+    Καλεί το gemini-3.6-flash με ασφαλή διαχείριση ορίων RPD/RPM.
     """
     model_name = 'gemini-3.6-flash'
     
     for attempt in range(retries):
         try:
-            config_args = {"temperature": 0.1}
-            if is_json:
-                config_args["response_mime_type"] = "application/json"
-                
             response = client.models.generate_content(
                 model=model_name,
                 contents=prompt,
-                config=types.GenerateContentConfig(**config_args)
+                config=types.GenerateContentConfig(temperature=0.1)
             )
             return response.text
         except Exception as e:
-            if "503" in str(e) or "UNAVAILABLE" in str(e):
-                wait_time = (attempt + 1) * 6
-                print(f"⚠️ Υψηλός φόρτος στο {model_name}. Επαναδοκιμή σε {wait_time}s (Προσπάθεια {attempt + 1}/{retries})...")
+            err_msg = str(e)
+            if "429" in err_msg or "RESOURCE_EXHAUSTED" in err_msg:
+                match = re.search(r'retryDelay.*?:.*?(\d+)', err_msg)
+                wait_time = int(match.group(1)) + 2 if match else 35
+                print(f"⚠️ Προσέγγιση Quota Limit (429). Αναμονή {wait_time}s (Προσπάθεια {attempt + 1}/{retries})...")
+                time.sleep(wait_time)
+            elif "503" in err_msg or "UNAVAILABLE" in err_msg:
+                wait_time = (attempt + 1) * 8
+                print(f"⚠️ Υψηλός φόρτος (503). Αναμονή {wait_time}s (Προσπάθεια {attempt + 1}/{retries})...")
                 time.sleep(wait_time)
             else:
                 print(f"❌ Σφάλμα API στο μοντέλο {model_name}: {e}")
                 break
     return None
 
-def analyze_batch(batch_data):
-    """Αναλύει ένα γκρουπ αγώνων (batch) και επιστρέφει τους επικρατέστερους με διευρυμένες στοιχηματικές αγορές."""
-    prompt = f"""
-    Είσαι επαγγελματίας αθλητικός αναλυτής. Εξέτασε το παρακάτω γκρουπ αγώνων.
-    
-    ΔΕΔΟΜΕΝΑ:
-    {json.dumps(batch_data, ensure_ascii=False, indent=2)}
-
-    Ξεχώρισε τους 2 αγώνες με τις υψηλότερες πιθανότητες επιβεβαίωσης.
-    
-    ΜΠΟΡΕΙΣ ΝΑ ΠΡΟΤΕΙΝΕΙΣ ΟΠΟΙΑΔΗΠΟΤΕ ΑΠΟ ΤΙΣ ΕΞΗΣ ΑΓΟΡΕΣ (Choose the best value option):
-    - Τελικό Αποτέλεσμα / Διπλή Ευκαιρία (1, X, 2, 1X, 2X)
-    - Γκολ (Over 1.5, Over 2.5, Goal/Goal, No Goal)
-    - Combo Bets (π.χ. 1 & Over 1.5, 2 & Over 2.5, 1X & Over 1.5, G/G & Over 2.5)
-
-    Επίστρεψε JSON μορφή ως ακολούθως:
-    [
-      {{
-        "match": "Ομάδα A vs Ομάδα B",
-        "league": "Διοργάνωση",
-        "pick": "Πρόταση (π.χ. 1 & Over 1.5, Over 2.5, G/G)",
-        "confidence": 78,
-        "reason": "Σύντομη αιτιολογία"
-      }}
-    ]
+def analyze_all_matches_in_single_call(all_matches_data, total_matches):
     """
-
-    res_text = call_gemini_with_retry(prompt, is_json=True)
-    if res_text:
-        try:
-            return json.loads(res_text)
-        except Exception:
-            return []
-    return []
-
-def select_top_picks(candidates, total_matches):
-    """Επιλέγει τις 3 κορυφαίες προτάσεις από όλους τους επικρατέστερους αγώνες."""
+    Στέλνει ΟΛΟΥΣ τους αγώνες σε 1 μόνο API call στο Gemini για μέγιστη εξοικονόμηση ορίων RPD.
+    """
     prompt = f"""
-    Είσαι ένας αυστηρός αναλυτής στοιχημάτων. Εξετάστηκαν συνολικά {total_matches} αγώνες.
-    Από τους παρακάτω επικρατέστερους αγώνες, διάλεξε ΑΥΣΤΗΡΑ τις 3 ΚΑΛΥΤΕΡΕΣ προτάσεις (με την υψηλότερη αξιοπιστία):
+    Είσαι ένας αυστηρός αναλυτής αθλητικών στοιχημάτων. 
+    Εξετάζεις ένα σύνολο {total_matches} αγώνων.
 
-    {json.dumps(candidates, ensure_ascii=False, indent=2)}
+    ΔΕΔΟΜΕΝΑ ΑΓΩΝΩΝ:
+    {json.dumps(all_matches_data, ensure_ascii=False, indent=2)}
+
+    ΟΔΗΓΙΕΣ ΑΝΑΛΥΣΗΣ:
+    1. Αξιολόγησε όλους τους αγώνες συνδυάζοντας την έδρα, τις ειδήσεις/κλίμα των ομάδων και τη δυναμική.
+    2. Επιλογή: Ξεχώρισε ΑΥΣΤΗΡΑ τους 3 αγώνες που έχουν τις ΥΨΗΛΟΤΕΡΕΣ ΠΙΘΑΝΟΤΗΤΕΣ επιβεβαίωσης (High Confidence Bets).
+    3. Μπορείς να προτείνεις οποιαδήποτε αγορά: 1X2, Διπλή Ευκαιρία, Over/Under 1.5/2.5, Goal/Goal ή Combo Bets (π.χ. 1 & Over 1.5).
 
     ΜΟΡΦΗ ΑΠΑΝΤΗΣΗΣ (Strict Text Format for Telegram):
     🎯 TOP PROPICKS ({total_matches} Αγώνες Εξετάστηκαν)
@@ -167,11 +142,11 @@ def select_top_picks(candidates, total_matches):
     3. ...
     """
 
-    res_text = call_gemini_with_retry(prompt, is_json=False)
-    return res_text if res_text else "⚠️ Αδυναμία παραγωγής τελικών προτάσεων λόγω σφάλματος API."
+    res_text = call_gemini_with_retry(prompt)
+    return res_text if res_text else "⚠️ Αδυναμία παραγωγής τελικών προτάσεων λόγω εξάντλησης ημερήσιου ορίου API."
 
 def main():
-    print("🚀 Εκκίνηση Smart Betting Pipeline (Strict gemini-3.6-flash Retry)...")
+    print("🚀 Εκκίνηση Smart Betting Pipeline (1-Call Ultra-Optimized)...")
     
     matches, match_type = get_matches_smart()
     total_matches = len(matches)
@@ -181,39 +156,25 @@ def main():
         print("ℹ️ Δεν βρέθηκαν διαθέσιμοι αγώνες.")
         return
 
-    BATCH_SIZE = 10
-    candidates = []
-
-    # Επεξεργασία όλων των αγώνων σε batches των 10
-    for i in range(0, total_matches, BATCH_SIZE):
-        batch_matches = matches[i:i + BATCH_SIZE]
-        print(f"\n🔄 Επεξεργασία Batch {i//BATCH_SIZE + 1} ({len(batch_matches)} αγώνες)...")
+    # Συλλογή δεδομένων για όλους τους διαθέσιμους αγώνες (έως 30)
+    all_payloads = []
+    for match in matches[:30]:
+        home_team = match['homeTeam']['name']
+        away_team = match['awayTeam']['name']
+        league = match['competition']['name']
+        match_date = match['utcDate'][:10]
         
-        batch_payload = []
-        for match in batch_matches:
-            home_team = match['homeTeam']['name']
-            away_team = match['awayTeam']['name']
-            league = match['competition']['name']
-            match_date = match['utcDate'][:10]
-            
-            batch_payload.append({
-                "match": f"{home_team} vs {away_team}",
-                "league": league,
-                "date": match_date,
-                "home_news": get_news(home_team),
-                "away_news": get_news(away_team)
-            })
-            time.sleep(1)
+        all_payloads.append({
+            "match": f"{home_team} vs {away_team}",
+            "league": league,
+            "date": match_date,
+            "home_news": get_news(home_team),
+            "away_news": get_news(away_team)
+        })
+        time.sleep(0.3)
 
-        print(f"🧠 Αποστολή Batch {i//BATCH_SIZE + 1} στο Gemini...")
-        batch_candidates = analyze_batch(batch_payload)
-        candidates.extend(batch_candidates)
-        time.sleep(3)
-
-    print(f"\n📊 Συλλέχθηκαν {len(candidates)} υποψήφιοι αγώνες από όλα τα batches.")
-    print("🏆 Τελική αξιολόγηση για τις 3 κορυφαίες προτάσεις...")
-    
-    final_picks = select_top_picks(candidates, total_matches)
+    print(f"\n🧠 Αποστολή και των {len(all_payloads)} αγώνων σε 1 μόνο API call στο Gemini...")
+    final_picks = analyze_all_matches_in_single_call(all_payloads, total_matches)
     
     print("\n--- ΤΕΛΙΚΕΣ ΠΡΟΤΑΣΕΙΣ GEMINI ---")
     print(final_picks)
