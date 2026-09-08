@@ -169,7 +169,7 @@ def run_analysis_1(matches, match_type):
 # 📊 ΑΝΑΛΥΣΗ 2: PROGRESSIVE DRAW STRATEGY (4-MATCH WINDOW)
 # ==========================================
 def get_no_draw_teams():
-    """Σαρώνει τα πρωταθλήματα και εντοπίζει ομάδες με 4+ αγώνες χωρίς ισοπαλία (Χ)."""
+    """Σαρώνει τα πρωταθλήματα και εντοπίζει ομάδες χωρίς ισοπαλία (Χ)."""
     overdue_teams = []
     
     for comp in COMPETITIONS:
@@ -187,20 +187,23 @@ def get_no_draw_teams():
                 
                 for team_info in table:
                     played = team_info.get('playedGames', 0)
-                    # 🔴 SKIP αν δεν έχουν παιχτεί τουλάχιστον 4 αγωνιστικές
-                    if played < 4:
+                    # 🟢 ΝΕΟ ΦΙΛΤΡΟ: Απαιτούνται τουλάχιστον 3 αγώνες στη σεζόν
+                    if played < 3:
                         continue
                     
-                    form = team_info.get('form', '') # π.χ. "W,L,W,W,L"
+                    form = team_info.get('form', '')
                     if not form:
-                        continue
+                        draws = team_info.get('draws', 0)
+                        has_no_draw = (draws == 0)
+                        recent_form_str = f"{played} games (0 draws)"
+                    else:
+                        last_games = [g.strip() for g in form.split(',') if g.strip()]
+                        # Ελέγχουμε αν στους τελευταίους αγώνες ΔΕΝ υπάρχει 'D'
+                        has_no_draw = 'D' not in last_games
+                        recent_form_str = "".join(last_games)
                     
-                    last_games = [g.strip() for g in form.split(',') if g.strip()]
-                    
-                    # Ελέγχουμε αν στους τελευταίους 4 αγώνες ΔΕΝ υπάρχει 'D' (Draw)
-                    if len(last_games) >= 4 and 'D' not in last_games[-4:]:
+                    if has_no_draw:
                         team_name = team_info['team']['name']
-                        
                         total_rounds = (len(table) - 1) * 2
                         remaining_games = total_rounds - played
                         
@@ -209,7 +212,7 @@ def get_no_draw_teams():
                             "league": league_name,
                             "played_games": played,
                             "remaining_games": remaining_games,
-                            "recent_form": "".join(last_games[-5:]),
+                            "recent_form": recent_form_str,
                             "news": get_news(team_name)
                         })
             time.sleep(0.8)
@@ -220,18 +223,18 @@ def get_no_draw_teams():
 
 def run_analysis_2():
     print("\n--- 🚀 ΕΚΤΕΛΕΣΗ ΑΝΑΛΥΣΗΣ 2: Progressive Draw Strategy (4-Match Window) ---")
-    print("🔍 Σάρωση βαθμολογιών για ομάδες με 4+ αγώνες χωρίς Χ...")
+    print("🔍 Σάρωση βαθμολογιών για ομάδες με σερί χωρίς Χ...")
     
     overdue_data = get_no_draw_teams()
     print(f"📊 Βρέθηκαν {len(overdue_data)} ομάδες με σερί χωρίς ισοπαλία.")
 
     if not overdue_data:
-        send_telegram_message("ℹ️ ΑΝΑΛΥΣΗ 2: Δεν βρέθηκαν ομάδες με 4+ αγώνες χωρίς ισοπαλία (ή τα πρωταθλήματα έχουν < 4 αγωνιστικές).")
+        send_telegram_message("ℹ️ ΑΝΑΛΥΣΗ 2: Δεν βρέθηκαν ομάδες με σερί χωρίς ισοπαλία (ή τα πρωταθλήματα έχουν < 3 αγωνιστικές).")
         return
 
     prompt = f"""
     Είσαι ειδικός αναλυτής στοιχηματικών μοτίβων (Progressive Draw Betting Specialist).
-    Εξετάζεις ομάδες που διανύουν σερί ΤΟΥΛΑΧΙΣΤΟΝ 4 ΑΓΩΝΩΝ ΧΩΡΙΣ ΙΣΟΠΑΛΙΑ (D).
+    Εξετάζεις ομάδες που διανύουν σερί ΧΩΡΙΣ ΙΣΟΠΑΛΙΑ (D).
 
     ΔΕΔΟΜΕΝΑ ΟΜΑΔΩΝ:
     {json.dumps(overdue_data, ensure_ascii=False, indent=2)}
